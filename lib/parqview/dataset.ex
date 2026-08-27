@@ -8,6 +8,9 @@ defmodule Parqview.Dataset do
   """
   alias Explorer.DataFrame, as: DF
   alias Explorer.Series, as: S
+  # DF.filter/2 is a macro: the query expression is compiled, which is what lets
+  # Polars push the predicate down into the Parquet reader.
+  require Explorer.DataFrame
 
   @doc "Directory currently being browsed."
   def dir, do: Application.get_env(:parqview, :dir, File.cwd!())
@@ -51,9 +54,11 @@ defmodule Parqview.Dataset do
 
   @doc "A page of a relation as {columns, rows-as-lists}, images elided."
   def page(name, offset, limit, dir \\ dir()) do
-    df = name |> path_for(dir) |> DF.from_parquet!()
-    cols = DF.names(df) |> Enum.reject(&(&1 == "image"))
-    slice = DF.slice(df, offset, limit) |> DF.select(cols)
+    path = path_for(name, dir)
+    cols = path |> DF.from_parquet!(max_rows: 1) |> DF.names()
+           |> Enum.reject(&(&1 in ["image", "image_bytes"]))
+    df = DF.from_parquet!(path, columns: cols)
+    slice = DF.slice(df, offset, limit)
 
     rows =
       cols
@@ -88,7 +93,11 @@ defmodule Parqview.Dataset do
   varies, so it is discovered rather than named.
   """
   def image_page(name, offset, limit, dir \\ dir()) do
-    df = name |> path_for(dir) |> DF.from_parquet!()
+    path = path_for(name, dir)
+    all = path |> DF.from_parquet!(max_rows: 1) |> DF.names()
+    # project away the payload: a page of captions must not decode any image
+    wanted = Enum.reject(all, &(&1 in ["image", "image_bytes"]))
+    df = DF.from_parquet!(path, columns: wanted)
     slice = DF.slice(df, offset, limit)
     names = DF.names(df)
 
@@ -112,27 +121,47 @@ defmodule Parqview.Dataset do
     end)
   end
 
-  @doc "Raw bytes of one embedded image, looked up by id within a relation."
+  @doc """
+  Raw bytes of one embedded image, in memory bounded by one row group rather
+  than by the file.
+
+  Explorer cannot do this. `DF.from_parquet!/1` materialises the relation, and
+  `lazy: true` measured no better — 4.8 GB peak for eight fetches from a 1.49 GB
+  shard, because the scan is not streamed and the predicate is not pushed into
+  the reader. Worse, calling `Series.to_list/1` on a multi-chunk struct column
+  panics the Polars NIF, which takes down the whole VM rather than raising.
+
+  So the read is delegated to a short pyarrow process that locates the row group
+  from footer statistics and decodes only that group. The bytes arrive over
+  stdout and the BEAM never holds a frame at all.
+
+  Bounded by the row group means the shard's row-group size is the memory
+  ceiling. Size groups by bytes, not rows: 16 rows of 500 KB thumbnails is 8 MB,
+  but 16 rows of 15 MB originals is 240 MB.
+  """
   def image_bytes(name, image_id, dir \\ dir()) do
-    df = name |> path_for(dir) |> DF.from_parquet!()
+    path = path_for(name, dir)
+    col = payload_column(path)
+    script = Application.app_dir(:parqview, ["priv", "python", "read_row_group.py"])
 
-    # a relation can exist and still not be an image relation: `image` in an ETNF
-    # catalogue is the identity table, not a payload
-    names = DF.names(df)
+    case System.cmd(python(), [script, path, col, Integer.to_string(image_id)]) do
+      {bytes, 0} when byte_size(bytes) > 0 ->
+        {:ok, bytes}
 
-    unless "image" in names or "image_bytes" in names do
-      raise Parqview.NotFoundError, message: "#{name} carries no image column"
+      _ ->
+        raise Parqview.NotFoundError, message: "no image #{image_id} in #{name}"
     end
-    idx = df["image_id"] |> S.to_list() |> Enum.find_index(&(&1 == image_id))
+  end
 
-    case idx do
-      nil -> raise Parqview.NotFoundError, message: "no image #{image_id} in #{name}"
-      i ->
-        case df["image"] |> S.to_list() |> Enum.at(i) do
-          %{"bytes" => b} -> {:ok, b}
-          b when is_binary(b) -> {:ok, b}
-          _ -> :error
-        end
+  defp python, do: Application.get_env(:parqview, :python, "python3")
+
+  defp payload_column(path) do
+    names = path |> DF.from_parquet!(max_rows: 1) |> DF.names()
+
+    cond do
+      "image" in names -> "image"
+      "image_bytes" in names -> "image_bytes"
+      true -> raise Parqview.NotFoundError, message: "#{Path.basename(path)} carries no image column"
     end
   end
 end

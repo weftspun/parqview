@@ -62,3 +62,6 @@ import_config "#{config_env()}.exs"
 
 # Directory of Parquet relations to browse; override with PARQVIEW_DIR at runtime.
 config :parqview, dir: System.get_env("PARQVIEW_DIR") || File.cwd!()
+
+# Interpreter used for the bounded row-group read (see Parqview.Dataset).
+config :parqview, python: System.get_env("PARQVIEW_PYTHON") || "python3"

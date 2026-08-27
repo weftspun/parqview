@@ -65,13 +65,42 @@ whole ERTS directory, another missing application modules — and the cross-targ
 NIF problem above needed a bespoke release step to work around. A standard
 release plus a CI matrix is less clever and actually works.
 
-## Known issues
+## Reading images in constant memory
 
-**`Dataset.image_bytes/3` loads the whole relation to fetch one image.** Fine for
-shards up to a few hundred MB; against 1.5 GB shards a page of sixty thumbnails
-will try to allocate far more memory than you have. Fixing this needs a
-row-group-targeted read rather than `DF.from_parquet!/1`. Point it at modest
-shards until then.
+Fetching one image costs memory proportional to a **row group**, not to the
+file. Measured on this machine, 40 fetches with the payload discarded:
+
+| Shard | RSS delta |
+|---|---|
+| 2.5 MB | 162 MB |
+| 1.49 GB | 149 MB |
+
+A 600x difference in file size for the same memory. The naive read — the obvious
+`DF.from_parquet!/1`, find the row, take the cell — peaked at **4,863 MB** for
+eight fetches from that 1.49 GB shard.
+
+Explorer cannot do this itself. `lazy: true` measured no better than eager,
+because the scan is not streamed and the `image_id` predicate is not pushed into
+the Parquet reader. Worse, `Series.to_list/1` on a multi-chunk struct column
+panics the Polars NIF, and a NIF panic takes down the entire VM rather than
+raising something a supervisor could handle.
+
+So the read is delegated to a short-lived pyarrow process
+(`priv/python/read_row_group.py`) that locates the row group from footer
+statistics — no data pages decoded until the right group is known — and returns
+the bytes on stdout. The BEAM never holds a DataFrame. That costs about 215 ms
+per fetch in process startup, which is why the grid loads thumbnails lazily.
+
+**This makes Python a runtime dependency** for image relations only. Tabular
+browsing is pure Elixir. Set `PARQVIEW_PYTHON` if `python3` is not on PATH; it
+needs `pyarrow`.
+
+### Size your row groups by bytes, not rows
+
+The row group is the memory ceiling, so it is the number that matters. 16 rows
+of 500 KB thumbnails is an 8 MB group; 16 rows of 15 MB originals is 240 MB.
+Writers that take `row_group_size` in rows — pyarrow, Polars — will happily give
+you wildly uneven groups from variable-size images. Target bytes.
 
 ## Error handling
 
