@@ -43,12 +43,14 @@ with sync_playwright() as pw:
         return page.locator(f'aside button:has(span:text-is("{name}"))').first
 
     names = [buttons.nth(i).inner_text().split("\n")[0].strip() for i in range(n)]
-    if "cosplayer" in names:
-        rel_button(page, "cosplayer").click()
+    # first non-image relation, whatever the dataset happens to be called
+    tabular = next((x for x in names if not x.startswith("part-")), None)
+    if tabular:
+        rel_button(page, tabular).click()
         page.wait_for_selector("table tbody tr", timeout=5000)
         rows = page.locator("table tbody tr").count()
         cols = page.locator("table thead th").count()
-        check("cosplayer table renders", rows > 0 and cols == 2, f"{rows} rows x {cols} cols")
+        check(f"{tabular} table renders", rows > 0 and cols > 0, f"{rows} rows x {cols} cols")
         first = page.locator("table tbody tr").first.inner_text()
         check("cell values present", len(first.strip()) > 0, first.replace("\t", " | ")[:50])
 

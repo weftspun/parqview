@@ -79,7 +79,14 @@ defmodule Parqview.Dataset do
     "image" in cols or "image_bytes" in cols
   end
 
-  @doc "A page of thumbnails as `{image_id, rel_path, p_nsfw}`, bytes fetched separately."
+  @doc """
+  A page of thumbnails as `{image_id, label, score}`, bytes fetched separately.
+
+  `score` is an optional caption value: the first float column in the relation
+  other than the id. Datasets often carry a per-image number worth seeing next to
+  the thumbnail — a confidence, a rating, a distance — and which column that is
+  varies, so it is discovered rather than named.
+  """
   def image_page(name, offset, limit, dir \\ dir()) do
     df = name |> path_for(dir) |> DF.from_parquet!()
     slice = DF.slice(df, offset, limit)
@@ -87,9 +94,22 @@ defmodule Parqview.Dataset do
 
     ids = slice["image_id"] |> S.to_list()
     paths = if "rel_path" in names, do: S.to_list(slice["rel_path"]), else: Enum.map(ids, &"##{&1}")
-    scores = if "p_nsfw" in names, do: S.to_list(slice["p_nsfw"]), else: Enum.map(ids, fn _ -> nil end)
+
+    scores =
+      case score_column(df, names) do
+        nil -> Enum.map(ids, fn _ -> nil end)
+        col -> S.to_list(slice[col])
+      end
 
     {Enum.zip([ids, paths, scores]), DF.n_rows(df)}
+  end
+
+  # first float column that is not an identifier, used as the thumbnail caption
+  defp score_column(df, names) do
+    Enum.find(names, fn n ->
+      n not in ["image_id", "rel_path", "sha256", "image", "image_bytes"] and
+        match?({:f, _}, S.dtype(df[n]))
+    end)
   end
 
   @doc "Raw bytes of one embedded image, looked up by id within a relation."
