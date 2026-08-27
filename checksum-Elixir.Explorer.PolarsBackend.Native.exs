@@ -1,0 +1,15 @@
+%{
+  "explorer-v0.12.0-nif-2.15-x86_64-pc-windows-gnu--legacy_cpu.dll.tar.gz" => "sha256:7c7dbfe5deba1539e5fa9d0708e3157cdc2c15862e9264b7d09f2ca50df28290",
+  "explorer-v0.12.0-nif-2.15-x86_64-pc-windows-gnu.dll.tar.gz" => "sha256:fcf24c827ea5432098af9ddc5e1bf85d8e558f91a488c5891160ae8d82ff6607",
+  "explorer-v0.12.0-nif-2.15-x86_64-pc-windows-msvc--legacy_cpu.dll.tar.gz" => "sha256:970cc9958b755e21df92814c14782e3e942485c7de117e3555d33b7ab58276ec",
+  "explorer-v0.12.0-nif-2.15-x86_64-pc-windows-msvc.dll.tar.gz" => "sha256:1ee1350cb6a9b9c0800f8116efbeb5735131f6fede4f4d47b7e75a40f8b22327",
+  "libexplorer-v0.12.0-nif-2.15-aarch64-apple-darwin.so.tar.gz" => "sha256:daf57367a83a0cc731af14a7474dfd17f204fa891efa38973983480839ee48c2",
+  "libexplorer-v0.12.0-nif-2.15-aarch64-unknown-linux-gnu.so.tar.gz" => "sha256:9d941b468740723e5f749bee97f3443c85b58df89390780c07e7ff0cf67103e7",
+  "libexplorer-v0.12.0-nif-2.15-aarch64-unknown-linux-musl.so.tar.gz" => "sha256:801ee337965a65635713258855b8d1635c8f0915da6c066a3844f9b5b745742a",
+  "libexplorer-v0.12.0-nif-2.15-x86_64-apple-darwin.so.tar.gz" => "sha256:e1508d970a0af6727b6ca6655337757c7fdf6b51f0cd3c759f28ce4c77c9320a",
+  "libexplorer-v0.12.0-nif-2.15-x86_64-unknown-freebsd--legacy_cpu.so.tar.gz" => "sha256:1405b31883b5c1bad4af670bd01bbda7dabc9bd6520dc44105a2a0d8a40d8474",
+  "libexplorer-v0.12.0-nif-2.15-x86_64-unknown-freebsd.so.tar.gz" => "sha256:45275662dced9c12f63fcd17eb289a1755145cc7194e7278cd983cb037b9a230",
+  "libexplorer-v0.12.0-nif-2.15-x86_64-unknown-linux-gnu--legacy_cpu.so.tar.gz" => "sha256:927e0e267b5c0c1a02b2d7d2c679250f547d44e7d42cf47aabb320cf6189a719",
+  "libexplorer-v0.12.0-nif-2.15-x86_64-unknown-linux-gnu.so.tar.gz" => "sha256:4315e0dcc03fdd48e4861c5ea02ccf3e65a0a7a2646fad0c57367d1c6eb68114",
+  "libexplorer-v0.12.0-nif-2.15-x86_64-unknown-linux-musl.so.tar.gz" => "sha256:76d7779680212788456dc08d703a6dc1bea8e14741c8cd213d90439e23c5c452",
+}

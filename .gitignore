@@ -1,0 +1,7 @@
+/_build/
+/deps/
+/burrito_out/
+/priv/static/assets/
+erl_crash.dump
+*.ez
+.elixir_ls/
