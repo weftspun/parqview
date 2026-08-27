@@ -115,6 +115,14 @@ defmodule Parqview.Dataset do
   @doc "Raw bytes of one embedded image, looked up by id within a relation."
   def image_bytes(name, image_id, dir \\ dir()) do
     df = name |> path_for(dir) |> DF.from_parquet!()
+
+    # a relation can exist and still not be an image relation: `image` in an ETNF
+    # catalogue is the identity table, not a payload
+    names = DF.names(df)
+
+    unless "image" in names or "image_bytes" in names do
+      raise Parqview.NotFoundError, message: "#{name} carries no image column"
+    end
     idx = df["image_id"] |> S.to_list() |> Enum.find_index(&(&1 == image_id))
 
     case idx do

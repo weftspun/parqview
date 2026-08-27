@@ -1,0 +1,90 @@
+name: release
+
+# Explorer's Polars backend is a Rust NIF and rustler_precompiled fetches only
+# the build host's artefact, so a release is not portable across OS or arch.
+# Each platform therefore builds its own — which is also why this replaced an
+# attempt at cross-compiling with Burrito.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            asset: parqview-linux-x86_64
+          - os: macos-latest
+            asset: parqview-macos-aarch64
+          - os: macos-13
+            asset: parqview-macos-x86_64
+          - os: windows-latest
+            asset: parqview-windows-x86_64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: erlef/setup-beam@v1
+        with:
+          otp-version: "27"
+          elixir-version: "1.17"
+
+      - name: Cache deps and build
+        uses: actions/cache@v4
+        with:
+          path: |
+            deps
+            _build
+          key: ${{ runner.os }}-mix-${{ hashFiles('mix.lock') }}
+          restore-keys: ${{ runner.os }}-mix-
+
+      - run: mix deps.get
+
+      - name: Build assets
+        run: |
+          mix compile
+          mix assets.deploy
+        env:
+          MIX_ENV: prod
+
+      - name: Build release
+        run: mix release --overwrite
+        env:
+          MIX_ENV: prod
+
+      - name: Smoke test the release
+        shell: bash
+        run: |
+          mkdir -p smoke && tar xzf _build/prod/parqview-*.tar.gz -C smoke
+          test -d smoke/erts-* || { echo "release has no ERTS"; exit 1; }
+          test -f smoke/bin/parqview || { echo "no launcher"; exit 1; }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.asset }}
+          path: _build/prod/parqview-*.tar.gz
+
+  publish:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with: { path: dist }
+      - name: Rename per platform
+        run: |
+          cd dist
+          for d in */; do
+            n="${d%/}"
+            mv "$d"/parqview-*.tar.gz "./$n.tar.gz"
+          done
+          ls -la
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*.tar.gz
+          generate_release_notes: true

@@ -1,9 +1,9 @@
 # parqview
 
 A local web viewer for directories of Parquet files, in Elixir. Browse relations
-as paged tables; browse embedded images as a thumbnail grid. Ships as a single
-self-contained binary per platform via [Burrito](https://github.com/burrito-elixir/burrito) — no Erlang, Elixir, or Python
-install on the target machine.
+as paged tables; browse embedded images as a thumbnail grid. Ships as a standard
+Elixir release with ERTS bundled — no Erlang, Elixir, or Python install on the
+target machine.
 
 Built because the good Parquet tools split along an awkward line: DuckDB and Tad
 are excellent at columns and joins but show an image column as an opaque blob,
@@ -24,7 +24,7 @@ fall between them.
 ## Running
 
 ```sh
-PARQVIEW_DIR=/path/to/parquet PORT=4000 ./parqview start
+PARQVIEW_DIR=/path/to/parquet PORT=4000 bin/parqview start
 ```
 
 Then open <http://localhost:4000>. From source:
@@ -34,41 +34,38 @@ mix deps.get
 PARQVIEW_DIR=/path/to/parquet mix phx.server
 ```
 
-## Building the binaries
+## Building a release
 
 ```sh
-mix rustler_precompiled.download Explorer.PolarsBackend.Native --all
+mix deps.get
+MIX_ENV=prod mix compile
 MIX_ENV=prod mix assets.deploy
-for t in macos_arm macos_x86 linux_x86 windows_x86; do
-  MIX_ENV=prod BURRITO_TARGET=$t mix release --overwrite
-done
+MIX_ENV=prod mix release
 ```
 
-Targets land in `burrito_out/`.
+That produces `_build/prod/rel/parqview/` and a tarball
+`_build/prod/parqview-<vsn>.tar.gz`. The tarball is self-contained: extract it
+anywhere and run `bin/parqview start`. ERTS is included, so the target machine
+needs no BEAM install.
 
-### Why the NIF download step matters
+### Releases are per-platform, not cross-compiled
 
 Explorer's Polars backend is a Rust NIF delivered by `rustler_precompiled`,
-which fetches exactly one artefact: the one matching the **build host**. Burrito
-will happily wrap that release for four targets and hand you three binaries that
-crash on boot with a load error.
+which fetches exactly one artefact: the one matching the build host. A release
+built on macOS will not run on Linux, and no amount of packaging changes that.
+Build each platform on its own runner — `.github/workflows/release.yml` does
+this across Linux, macOS arm64/x86_64 and Windows, smoke-tests each tarball for a
+bundled ERTS, and attaches them to a tagged release.
 
-`Parqview.ReleaseSteps.swap_nif/1` runs between `:assemble` and `Burrito.wrap/1`
-and replaces the bundled NIF with the one for the target being built, taken from
-the `rustler_precompiled` cache — which is what the `--all` download populates.
-Without that download the build fails loudly rather than shipping a broken
-binary.
+An earlier version of this project used Burrito to produce single-file
+self-extracting binaries and cross-compile all four targets from one host. It was
+removed. On OTP 29 the extracted payload arrived incomplete and
+non-deterministically — one run missing `erts-*/bin/erl`, the next missing the
+whole ERTS directory, another missing application modules — and the cross-target
+NIF problem above needed a bespoke release step to work around. A standard
+release plus a CI matrix is less clever and actually works.
 
 ## Known issues
-
-**Burrito 1.6.0 on OTP 29 produces binaries that do not boot.** The
-self-extracting payload arrives incomplete — in our testing, sometimes missing
-`erts-*/bin/erl`, sometimes the whole ERTS directory, sometimes application
-modules such as HPAX. The extracted tree can be repaired by hand from
-`_build/prod/rel/<app>/`, after which it runs correctly, so the release itself is
-sound and the fault is in Burrito's packing or extraction. On OTP 27/28 this
-does not occur. Until it is resolved, `mix release` without Burrito produces a
-working release, and per-platform CI builds are the reliable path to binaries.
 
 **`Dataset.image_bytes/3` loads the whole relation to fetch one image.** Fine for
 shards up to a few hundred MB; against 1.5 GB shards a page of sixty thumbnails

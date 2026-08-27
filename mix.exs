@@ -68,8 +68,7 @@ defmodule Parqview.MixProject do
       {:jason, "~> 1.2"},
       {:dns_cluster, "~> 0.2.0"},
       {:bandit, "~> 1.5"},
-      {:explorer, "~> 0.10"},
-      {:burrito, "~> 1.0"}
+      {:explorer, "~> 0.10"}
     ]
   end
 
@@ -79,23 +78,17 @@ defmodule Parqview.MixProject do
   #     $ mix setup
   #
   # See the documentation for `Mix` for more info on aliases.
-  # Burrito wraps the release plus ERTS into one self-extracting binary per
-  # target. Explorer ships a Rust NIF via rustler_precompiled, so each target
-  # needs its own NIF: run `mix rustler_precompiled.download Explorer.PolarsBackend.Native --all`
-  # before building, or the cross-built binaries will carry the host's NIF and
-  # fail to boot.
+  # A standard Elixir release: `mix release` produces a self-contained tree under
+  # _build/prod/rel/parqview including ERTS, so the target needs no Elixir or
+  # Erlang install. Built per platform — Explorer's Polars backend is a Rust NIF
+  # and rustler_precompiled fetches only the build host's artefact, so a release
+  # is not portable across OS or architecture. See .github/workflows/release.yml.
   defp releases do
     [
       parqview: [
-        steps: [:assemble, &Parqview.ReleaseSteps.swap_nif/1, &Burrito.wrap/1],
-        burrito: [
-          targets: [
-            macos_arm: [os: :darwin, cpu: :aarch64],
-            macos_x86: [os: :darwin, cpu: :x86_64],
-            linux_x86: [os: :linux, cpu: :x86_64],
-            windows_x86: [os: :windows, cpu: :x86_64]
-          ]
-        ]
+        include_executables_for: [:unix, :windows],
+        include_erts: true,
+        steps: [:assemble, :tar]
       ]
     ]
   end
