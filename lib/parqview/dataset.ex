@@ -29,6 +29,7 @@ defmodule Parqview.Dataset do
   defp parquet_files(dir) do
     [Path.join([dir, "**", "*.parquet"])]
     |> Enum.flat_map(&Path.wildcard/1)
+    |> Enum.reject(&String.ends_with?(&1, ".idx.parquet"))
   end
 
   @doc "Row count, read from the file footer where the backend allows it."
@@ -142,18 +143,20 @@ defmodule Parqview.Dataset do
   def image_bytes(name, image_id, dir \\ dir()) do
     path = path_for(name, dir)
     col = payload_column(path)
-    script = Application.app_dir(:parqview, ["priv", "python", "read_row_group.py"])
 
-    case System.cmd(python(), [script, path, col, Integer.to_string(image_id)]) do
-      {bytes, 0} when byte_size(bytes) > 0 ->
-        {:ok, bytes}
+    # an indexed shard is a single pread; otherwise fall back to a row-group read
+    result =
+      if Parqview.Index.available?(path) do
+        Parqview.Index.read(path, image_id)
+      else
+        Parqview.Reader.fetch(path, col, image_id)
+      end
 
-      _ ->
-        raise Parqview.NotFoundError, message: "no image #{image_id} in #{name}"
+    case result do
+      {:ok, bytes} -> {:ok, bytes}
+      :error -> raise Parqview.NotFoundError, message: "no image #{image_id} in #{name}"
     end
   end
-
-  defp python, do: Application.get_env(:parqview, :python, "python3")
 
   defp payload_column(path) do
     names = path |> DF.from_parquet!(max_rows: 1) |> DF.names()

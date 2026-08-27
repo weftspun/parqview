@@ -14,6 +14,7 @@ defmodule Parqview.Application do
       # Start a worker by calling: Parqview.Worker.start_link(arg)
       # {Parqview.Worker, arg},
       # Start to serve requests, typically the last entry
+      Parqview.Reader,
       ParqviewWeb.Endpoint
     ]
 
