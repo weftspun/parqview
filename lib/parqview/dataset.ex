@@ -29,7 +29,6 @@ defmodule Parqview.Dataset do
   defp parquet_files(dir) do
     [Path.join([dir, "**", "*.parquet"])]
     |> Enum.flat_map(&Path.wildcard/1)
-    |> Enum.reject(&String.ends_with?(&1, ".idx.parquet"))
   end
 
   @doc "Row count, read from the file footer where the backend allows it."
@@ -44,6 +43,20 @@ defmodule Parqview.Dataset do
   such relation, so callers never have to check — the crash carries a 404.
   """
   def path_for(name, dir \\ dir()) do
+    key = {__MODULE__, :path, dir, name}
+
+    case :persistent_term.get(key, nil) do
+      nil ->
+        path = resolve(name, dir)
+        :persistent_term.put(key, path)
+        path
+
+      path ->
+        path
+    end
+  end
+
+  defp resolve(name, dir) do
     dir
     |> parquet_files()
     |> Enum.find(&(Path.basename(&1, ".parquet") == name))
@@ -123,36 +136,27 @@ defmodule Parqview.Dataset do
   end
 
   @doc """
-  Raw bytes of one embedded image, in memory bounded by one row group rather
-  than by the file.
+  Raw bytes of one embedded image, read through DuckDB.
 
-  Explorer cannot do this. `DF.from_parquet!/1` materialises the relation, and
-  `lazy: true` measured no better — 4.8 GB peak for eight fetches from a 1.49 GB
-  shard, because the scan is not streamed and the predicate is not pushed into
-  the reader. Worse, calling `Series.to_list/1` on a multi-chunk struct column
-  panics the Polars NIF, which takes down the whole VM rather than raising.
+  Memory is bounded by the row group holding the row, not by the file: DuckDB
+  prunes row groups from Parquet statistics and pushes the projection down, so
+  the payload of non-matching rows is never decoded.
 
-  So the read is delegated to a short pyarrow process that locates the row group
-  from footer statistics and decodes only that group. The bytes arrive over
-  stdout and the BEAM never holds a frame at all.
+  The naive alternative — `DF.from_parquet!/1`, find the row, take the cell —
+  peaked at 4.8 GB for eight fetches from a 1.49 GB shard. Explorer's
+  `lazy: true` measured no better, because the scan is not streamed and the
+  predicate is not pushed into the reader. Worse, `Series.to_list/1` on a
+  multi-chunk struct column panics the Polars NIF, and a NIF panic takes down the
+  VM rather than raising.
 
-  Bounded by the row group means the shard's row-group size is the memory
-  ceiling. Size groups by bytes, not rows: 16 rows of 500 KB thumbnails is 8 MB,
-  but 16 rows of 15 MB originals is 240 MB.
+  Row-group size is therefore the memory ceiling. Size groups by bytes, not rows:
+  16 rows of 500 KB thumbnails is 8 MB, but 16 rows of 15 MB originals is 240 MB.
   """
   def image_bytes(name, image_id, dir \\ dir()) do
     path = path_for(name, dir)
     col = payload_column(path)
 
-    # an indexed shard is a single pread; otherwise fall back to a row-group read
-    result =
-      if Parqview.Index.available?(path) do
-        Parqview.Index.read(path, image_id)
-      else
-        Parqview.Reader.fetch(path, col, image_id)
-      end
-
-    case result do
+    case Parqview.Reader.fetch(path, col, image_id) do
       {:ok, bytes} -> {:ok, bytes}
       :error -> raise Parqview.NotFoundError, message: "no image #{image_id} in #{name}"
     end

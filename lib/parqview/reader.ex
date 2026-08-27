@@ -1,91 +1,89 @@
 defmodule Parqview.Reader do
   @moduledoc """
-  A pool of long-lived pyarrow workers that return one image's bytes.
+  Reads one image's bytes out of a Parquet shard, using DuckDB.
 
-  Spawning a fresh interpreter per request cost ~215 ms, essentially all of it
-  interpreter startup and `import pyarrow` — roughly a thousand times the cost of
-  the row-group read it was wrapping. The workers here pay that once at boot and
-  then answer in the time the read actually takes.
+  DuckDB prunes row groups from Parquet statistics and pushes the projection
+  down, so a fetch decodes the group holding the row rather than the file. That
+  is the same work the earlier pyarrow subprocess did, minus the subprocess:
+  `duckdbex` ships a precompiled NIF, so there is no Python, no port protocol,
+  and no interpreter startup on the request path.
 
-  Each worker owns a port in `{:packet, 4}` mode, so framing is handled by the
-  VM rather than by hand-rolled length parsing. Workers are stateless between
-  requests apart from a cache of open Parquet handles, so any worker can serve
-  any request and dispatch is round-robin.
+  Connections are per-caller and cheap; the prepared statement is cached per
+  shard in `:persistent_term`, which keeps the plan and the Parquet footer warm
+  across requests and gives lock-free concurrent reads.
   """
-  use Supervisor
+  use GenServer
 
-  @pool_size 4
-  @timeout 30_000
-
-  def start_link(opts), do: Supervisor.start_link(__MODULE__, opts, name: __MODULE__)
+  @doc false
+  def start_link(_opts), do: GenServer.start_link(__MODULE__, :ok, name: __MODULE__)
 
   @impl true
-  def init(_opts) do
-    children =
-      for i <- 0..(@pool_size - 1) do
-        Supervisor.child_spec({Parqview.Reader.Worker, i}, id: {:reader, i})
+  def init(:ok) do
+    {:ok, db} = Duckdbex.open()
+    :persistent_term.put({__MODULE__, :db}, db)
+    {:ok, %{db: db}}
+  end
+
+  defp db, do: :persistent_term.get({__MODULE__, :db})
+
+  @doc """
+  Bytes of `image_id` from `shard`, or `:error` when there is no such row.
+
+  `column` is the payload column: `image` for the Hugging Face
+  `struct<bytes, path>` layout, or a plain binary column.
+  """
+  def fetch(shard, column, image_id) do
+    # one connection per calling process, reused across that process's requests:
+    # DuckDB connections are not for concurrent use, and a LiveView or Plug
+    # request process makes several fetches in a row.
+    conn =
+      case Process.get(:parqview_duckdb_conn) do
+        nil ->
+          {:ok, c} = Duckdbex.connection(db())
+          Process.put(:parqview_duckdb_conn, c)
+          c
+
+        c ->
+          c
       end
 
-    Supervisor.init(children, strategy: :one_for_one)
-  end
+    # the prepared statement holds the plan and the Parquet footer, so preparing
+    # it per fetch costs more than the fetch; keep one per shard per process
+    key = {:parqview_duckdb_stmt, shard, column}
 
-  @doc "Bytes of `image_id` from `path`, or `:error` when absent."
-  def fetch(path, column, image_id) do
-    worker = rem(System.unique_integer([:positive]), @pool_size)
+    stmt =
+      case Process.get(key) do
+        nil ->
+          {:ok, s} = Duckdbex.prepare_statement(conn, sql(shard, column))
+          Process.put(key, s)
+          s
 
-    GenServer.call(
-      Parqview.Reader.Worker.name(worker),
-      {:fetch, path, column, image_id},
-      @timeout
-    )
-  end
-
-  defmodule Worker do
-    @moduledoc false
-    use GenServer
-
-    def name(i), do: :"parqview_reader_#{i}"
-    def start_link(i), do: GenServer.start_link(__MODULE__, i, name: name(i))
-
-    @impl true
-    def init(_i) do
-      Process.flag(:trap_exit, true)
-      {:ok, %{port: open()}}
-    end
-
-    defp open do
-      script = Application.app_dir(:parqview, ["priv", "python", "reader_worker.py"])
-      python = Application.get_env(:parqview, :python, "python3")
-      exe = System.find_executable(python) || raise "python not found: #{python}"
-
-      Port.open({:spawn_executable, exe}, [
-        :binary,
-        :exit_status,
-        {:packet, 4},
-        {:args, [script]}
-      ])
-    end
-
-    @impl true
-    def handle_call({:fetch, path, column, id}, _from, %{port: port} = state) do
-      req = Jason.encode!(%{path: path, column: column, id: id})
-      Port.command(port, req)
-
-      receive do
-        {^port, {:data, ""}} -> {:reply, :error, state}
-        {^port, {:data, bytes}} -> {:reply, {:ok, bytes}, state}
-        {^port, {:exit_status, _}} -> {:reply, :error, %{state | port: open()}}
-      after
-        25_000 -> {:reply, :error, state}
+        s ->
+          s
       end
+
+    case Duckdbex.execute_statement(stmt, [image_id]) do
+      {:ok, result} ->
+        case Duckdbex.fetch_all(result) do
+          [[bytes]] when is_binary(bytes) -> {:ok, bytes}
+          _ -> :error
+        end
+
+      {:error, _} ->
+        :error
     end
-
-    # a worker that dies is replaced rather than nursed: the cache it held was
-    # only an optimisation
-    @impl true
-    def handle_info({port, {:exit_status, _}}, %{port: port} = state),
-      do: {:noreply, %{state | port: open()}}
-
-    def handle_info(_, state), do: {:noreply, state}
   end
+
+  # `image.bytes` reaches into the struct so only the payload field is read;
+  # a plain binary column is selected directly.
+  defp sql(shard, "image"),
+    do: "SELECT image.bytes FROM read_parquet(#{literal(shard)}) WHERE image_id = $1"
+
+  defp sql(shard, column),
+    do: "SELECT #{quoted(column)} FROM read_parquet(#{literal(shard)}) WHERE image_id = $1"
+
+  # the path is interpolated because read_parquet takes a constant, so it is
+  # escaped as a SQL string literal rather than trusted
+  defp literal(path), do: "'" <> String.replace(path, "'", "''") <> "'"
+  defp quoted(name), do: "\"" <> String.replace(name, "\"", "\"\"") <> "\""
 end
